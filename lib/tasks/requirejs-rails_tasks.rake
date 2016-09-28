@@ -148,46 +148,60 @@ OS X Homebrew users can use 'brew install node'.
       begin
         requirejs.config.build_config["modules"].each do |m|
           module_name = requirejs.config.module_name_for(m)
-          paths = requirejs.config.build_config["paths"] || {}
-          module_script_name = "#{module_name}.js"
+          
+          paths_thread = Thread.new { requirejs.config.build_config["paths"] || {} }
+          paths = paths_thread.join.value
 
+          module_script_name = "#{module_name}.js"
           # Is there a `paths` entry for the module?
-          if !paths[module_name]
-            asset_name = module_script_name
-          else
-            asset_name = "#{paths[module_name]}.js"
+          asset_name_thread = Thread.new do
+            if !paths[module_name]
+              module_script_name
+            else
+              "#{paths[module_name]}.js"
+            end
           end
+
+          asset_name = asset_name_thread.join.value
 
           asset = requirejs.env.find_asset(asset_name)
 
           built_asset_path = requirejs.config.build_dir.join(asset_name)
+          
+          digest_name_thread = Thread.new do
+            # Compute the digest based on the contents of the compiled file, *not* on the contents of the RequireJS module.
+            file_digest = ::Rails.application.assets.file_digest(built_asset_path.to_s)
+            hex_digest = file_digest.unpack("H*").first
+            asset.logical_path.gsub(path_extension_pattern) { |ext| "-#{hex_digest}#{ext}" }
+          end
 
-          # Compute the digest based on the contents of the compiled file, *not* on the contents of the RequireJS module.
-          file_digest = ::Rails.application.assets.file_digest(built_asset_path.to_s)
-          hex_digest = file_digest.unpack("H*").first
-          digest_name = asset.logical_path.gsub(path_extension_pattern) { |ext| "-#{hex_digest}#{ext}" }
+          digest_name = digest_name_thread.join.value
 
           digest_asset_path = requirejs.config.target_dir + digest_name
-
+          
           # Ensure that the parent directory `a/b` for modules with names like `a/b/c` exist.
           digest_asset_path.dirname.mkpath
-
           requirejs.manifest[module_script_name] = digest_name
+          
           FileUtils.cp built_asset_path, digest_asset_path
 
-          # Create the compressed versions
-          File.open("#{built_asset_path}.gz", 'wb') do |f|
-            zgw = Zlib::GzipWriter.new(f, Zlib::BEST_COMPRESSION)
-            zgw.write built_asset_path.read
-            zgw.close
+          Thread.new do
+            File.open("#{built_asset_path}.gz", 'wb') do |f|
+            # Create the compressed versions
+              zgw = Zlib::GzipWriter.new(f, Zlib::BEST_COMPRESSION)
+              zgw.write built_asset_path.read
+              zgw.close
+            end
           end
-          FileUtils.cp "#{built_asset_path}.gz", "#{digest_asset_path}.gz"
 
-          requirejs.config.manifest_path.open('wb') do |f|
-            YAML.dump(requirejs.manifest, f)
+          Thread.new do 
+            FileUtils.cp "#{built_asset_path}.gz", "#{digest_asset_path}.gz" 
+            requirejs.config.manifest_path.open('wb') do |f|
+              YAML.dump(requirejs.manifest, f)
+            end
           end
         end
-      end  
+      end
     end
   end
 
