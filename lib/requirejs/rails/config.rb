@@ -27,7 +27,7 @@ module Requirejs
         self.logical_path_patterns = LOGICAL_PATH_PATTERNS
 
         self.tmp_dir = application.root + 'tmp'
-        self.bin_dir = Pathname.new(__FILE__+'/../../../../bin').cleanpath
+        self.bin_dir = Thread.new { Pathname.new(__FILE__+'/../../../../bin').cleanpath }.join.value
 
         self.source_dir = self.tmp_dir.join("requirejs/src")
         self.build_dir = self.tmp_dir.join("requirejs/dst")
@@ -36,7 +36,7 @@ module Requirejs
 
         self.loader = :requirejs
 
-        self.driver_template_path = Pathname.new(__FILE__+'/../rjs_driver.js.erb').cleanpath
+        self.driver_template_path = Thread.new { Pathname.new(__FILE__+'/../rjs_driver.js.erb').cleanpath }.join.value
         self.driver_path = self.tmp_dir.join("requirejs/rjs_driver.js")
 
         self.user_config = {}
@@ -103,29 +103,32 @@ module Requirejs
       end
 
       def loader=(sym)
-        unless LOADERS.include?(sym)
-          raise Requirejs::ConfigError, "Attempt to set unknown loader: #{sym}"
-        end
-        self[:loader] = sym
+        Thread.new do
+          unless LOADERS.include?(sym)
+            raise Requirejs::ConfigError, "Attempt to set unknown loader: #{sym}"
+          end
+          self[:loader] = sym
+        end.join.value
       end
 
       def build_config
         unless self.has_key?(:build_config)
           self[:build_config] = self.run_config.merge "baseUrl" => source_dir.to_s,
-                                                      "modules" => [{'name' => 'application'}]
-          self[:build_config].merge!(self.user_config).slice!(*self.build_config_whitelist)
+            "modules" => [{'name' => 'application'}]
+          self[:build_config].merge!(self.user_config)
+          self[:build_config].slice!(*self.build_config_whitelist)
           case self.loader
-            when :requirejs
-              # nothing to do
-            when :almond
-              mods = self[:build_config]['modules']
-              unless mods.length == 1
-                raise Requirejs::ConfigError, "Almond build requires exactly one module, config has #{mods.length}."
-              end
-              mod = mods[0]
-              name = mod['name']
-              mod['name'] = 'almond'
-              mod['include'] = name
+          when :requirejs
+            # nothing to do
+          when :almond
+            mods = self[:build_config]['modules']
+            unless mods.length == 1
+              raise Requirejs::ConfigError, "Almond build requires exactly one module, config has #{mods.length}."
+            end
+            mod = mods[0]
+            name = mod['name']
+            mod['name'] = 'almond'
+            mod['include'] = name
           end
         end
         self[:build_config]
@@ -134,7 +137,8 @@ module Requirejs
       def run_config
         unless self.has_key?(:run_config)
           self[:run_config] = {"baseUrl" => "/assets"}
-          self[:run_config].merge!(self.user_config).slice!(*self.run_config_whitelist)
+          self[:run_config].merge!(self.user_config)
+          self[:run_config].slice!(*self.run_config_whitelist)
         end
         self[:run_config]
       end
@@ -148,10 +152,10 @@ module Requirejs
 
       def module_name_for(mod)
         case self.loader
-          when :almond
-            return mod['include']
-          when :requirejs
-            return mod['name']
+        when :almond
+          return mod['include']
+        when :requirejs
+          return mod['name']
         end
       end
 

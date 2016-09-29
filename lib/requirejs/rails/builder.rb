@@ -15,9 +15,13 @@ module Requirejs
       end
 
       def generate_rjs_driver
-        templ = Erubis::Eruby.new(@config.driver_template_path.read)
-        @config.driver_path.open('w') do |f|
-          f.write(templ.result(@config.get_binding))
+        fork do
+          templ = Thread.new { Erubis::Eruby.new(@config.driver_template_path.read) }.join.value
+          Thread.new do
+            @config.driver_path.open('w') do |f|
+              f.write(templ.result(@config.get_binding))
+            end
+          end
         end
       end
     end

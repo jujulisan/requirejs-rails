@@ -35,8 +35,10 @@ namespace :requirejs do
   path_extension_pattern = Regexp.new("\\.(\\w+)\\z")
 
   task clean: ["requirejs:setup"] do
-    FileUtils.remove_entry_secure(requirejs.config.source_dir, true)
-    FileUtils.remove_entry_secure(requirejs.driver_path, true)
+    Thread.new do
+      FileUtils.remove_entry_secure(requirejs.config.source_dir, true)
+      FileUtils.remove_entry_secure(requirejs.driver_path, true)
+    end
   end
 
   task setup: ["assets:environment"] do
@@ -132,11 +134,16 @@ OS X Homebrew users can use 'brew install node'.
                    "requirejs:test_node",
                    "requirejs:precompile:prepare_source",
                    "requirejs:precompile:generate_rjs_driver"] do
-      requirejs.config.build_dir.mkpath
-      requirejs.config.target_dir.mkpath
-      requirejs.config.driver_path.dirname.mkpath
+      result_thread = Thread.new do
+        requirejs.config.build_dir.mkpath
+        requirejs.config.target_dir.mkpath
+        requirejs.config.driver_path.dirname.mkpath
 
-      result = `node "#{requirejs.config.driver_path}"`
+        `node "#{requirejs.config.driver_path}"`
+      end
+
+      result = result_thread.join.value
+
       unless $?.success?
         raise RuntimeError, "Asset compilation with node failed with error:\n\n#{result}\n"
       end
@@ -145,45 +152,51 @@ OS X Homebrew users can use 'brew install node'.
     # Copy each built asset, identified by a named module in the
     # build config, to its Sprockets digestified name.
     task digestify_and_compress: ["requirejs:precompile:run_rjs"] do
-      requirejs.config.build_config["modules"].each do |m|
-        module_name = requirejs.config.module_name_for(m)
-        paths = requirejs.config.build_config["paths"] || {}
-        module_script_name = "#{module_name}.js"
+      begin
+        requirejs.config.build_config["modules"].select do |m|
+          module_name = requirejs.config.module_name_for(m)
+          module_script_name = "#{module_name}.js"
+          paths = requirejs.config.build_config["paths"] || {}
 
-        # Is there a `paths` entry for the module?
-        if !paths[module_name]
-          asset_name = module_script_name
-        else
-          asset_name = "#{paths[module_name]}.js"
-        end
+          # Is there a `paths` entry for the module?
+          if !paths[module_name]
+            asset_name = module_script_name
+          else
+            asset_name ="#{paths[module_name]}.js"
+          end
 
-        asset = requirejs.env.find_asset(asset_name)
+          asset = requirejs.env.find_asset(asset_name)
+          built_asset_path = requirejs.config.build_dir.join(asset_name)
 
-        built_asset_path = requirejs.config.build_dir.join(asset_name)
+          # Compute the digest based on the contents of the compiled file, *not* on the contents of the RequireJS module.
+          file_digest = ::Rails.application.assets.file_digest(built_asset_path.to_s)
+          hex_digest = file_digest.unpack("H*").first
 
-        # Compute the digest based on the contents of the compiled file, *not* on the contents of the RequireJS module.
-        file_digest = ::Rails.application.assets.file_digest(built_asset_path.to_s)
-        hex_digest = file_digest.unpack("H*").first
-        digest_name = asset.logical_path.gsub(path_extension_pattern) { |ext| "-#{hex_digest}#{ext}" }
+          digest_name = asset.logical_path.gsub(path_extension_pattern) { |ext| "-#{hex_digest}#{ext}" }
 
-        digest_asset_path = requirejs.config.target_dir + digest_name
+          digest_asset_path = requirejs.config.target_dir + digest_name
 
-        # Ensure that the parent directory `a/b` for modules with names like `a/b/c` exist.
-        digest_asset_path.dirname.mkpath
+          # Ensure that the parent directory `a/b` for modules with names like `a/b/c` exist.
+          digest_asset_path.dirname.mkpath
 
-        requirejs.manifest[module_script_name] = digest_name
-        FileUtils.cp built_asset_path, digest_asset_path
+          requirejs.manifest[module_script_name] = digest_name
+          Thread.new { FileUtils.cp built_asset_path, digest_asset_path }
 
-        # Create the compressed versions
-        File.open("#{built_asset_path}.gz", 'wb') do |f|
-          zgw = Zlib::GzipWriter.new(f, Zlib::BEST_COMPRESSION)
-          zgw.write built_asset_path.read
-          zgw.close
-        end
-        FileUtils.cp "#{built_asset_path}.gz", "#{digest_asset_path}.gz"
+          Thread.new do
+            # Create the compressed versions
+            File.open("#{built_asset_path}.gz", 'wb') do |f|
+              zgw = Zlib::GzipWriter.new(f, Zlib::BEST_COMPRESSION)
+              zgw.write built_asset_path.read
+              zgw.close
+            end
+          end
 
-        requirejs.config.manifest_path.open('wb') do |f|
-          YAML.dump(requirejs.manifest, f)
+          Thread.new { FileUtils.cp "#{built_asset_path}.gz", "#{digest_asset_path}.gz" }
+          Thread.new do
+            requirejs.config.manifest_path.open('wb') do |f|
+              YAML.dump(requirejs.manifest, f)
+            end
+          end
         end
       end
     end
@@ -191,7 +204,9 @@ OS X Homebrew users can use 'brew install node'.
 
   desc "Precompile RequireJS-managed assets"
   task :precompile do
-    invoke_or_reboot_rake_task "requirejs:precompile:all"
+    fork do
+      invoke_or_reboot_rake_task "requirejs:precompile:all"
+    end
   end
 end
 
